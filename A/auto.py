@@ -34,9 +34,10 @@ def is_custom_checkin_day(user_config):
         if not custom_days:
             return True
         
-        # 获取当前日期（星期几，0-6，0代表周一）
-        from datetime import datetime
-        current_weekday = datetime.now().weekday()
+        # 获取北京时间（UTC+8）的星期几
+        from datetime import timezone, timedelta
+        beijing_timezone = timezone(timedelta(hours=8))
+        current_weekday = datetime.now(beijing_timezone).weekday()
         
         # 转换为配置格式（1-7代表周一至周日）
         # Python weekday(): 0=周一, 1=周二, ..., 6=周日
@@ -211,11 +212,13 @@ def clock_in_with_type(clock_type):
     from util.ApiService import ApiService
     from util.HelperFunctions import desensitize_name, desensitize_phone, desensitize_address
     from manager.UserInfoManager import UserInfoManager
-    from datetime import datetime
+    from datetime import datetime, timezone, timedelta
     
     logging.info(f"执行{clock_type}卡打卡")
     
-    current_time = datetime.now()
+    # 使用北京时间（UTC+8）
+    beijing_timezone = timezone(timedelta(hours=8))
+    current_time = datetime.now(beijing_timezone)
     
     # 根据clock_type设置打卡类型
     if clock_type == "上班":
