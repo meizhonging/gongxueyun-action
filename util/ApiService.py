@@ -29,7 +29,6 @@ HEADERS = {
 
 class ApiService:
     def __init__(self):
-
         self.max_retries = 5  # 控制重新尝试的次数
 
     def _post_request(
@@ -75,11 +74,9 @@ class ApiService:
                 wait_time = 1 * (2 ** retry_count)
                 time.sleep(wait_time)
                 logger.warning("Token失效，正在重新登录...")
-                if self.login():
-                    new_token = UserInfoManager.get_token()
-                    headers["authorization"] = new_token
-                    logger.info("已更新 Authorization Token，重试请求")
-                    return self._post_request(url, headers, data, retry_count + 1)
+                # 注意：在多用户环境下，自动重新登录可能会导致用户间数据混淆
+                # 因此我们不再自动重新登录，而是直接抛出异常，让上层处理
+                raise ValueError(f"Token失效: {rsp.get('msg', '未知错误')}")
             else:
                 raise ValueError(rsp.get("msg", "未知错误"))
 
