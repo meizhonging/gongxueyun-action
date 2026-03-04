@@ -225,18 +225,6 @@ def clock_in_with_type(clock_type):
     beijing_timezone = timezone(timedelta(hours=8))
     current_time = datetime.now(beijing_timezone)
     
-    # 根据clock_type设置打卡类型
-    if clock_type == "上班":
-        checkin_type = "START"
-        display_type = "上班"
-    elif clock_type == "下班":
-        checkin_type = "END"
-        display_type = "下班"
-    else:
-        # 默认上班卡
-        checkin_type = "START"
-        display_type = "上班"
-    
     # 清除所有可能的缓存，确保使用当前用户的数据
     ConfigManager._config_cache = None
     UserInfoManager._userInfo_cache = None
@@ -249,18 +237,52 @@ def clock_in_with_type(clock_type):
     try:
         # 获取打卡信息
         last_checkin_info = api_client.get_checkin_info()
-        
-        # 检查是否已经打过卡
-        if last_checkin_info and last_checkin_info.get("type") == checkin_type:
-            last_checkin_time = datetime.strptime(
-                last_checkin_info["createTime"], "%Y-%m-%d %H:%M:%S")
-            if last_checkin_time.date() == current_time.date():
-                log = f"今日[{display_type}]卡已打，无需重复打卡"
-                logging.info(log)
-                return {"title": "工学云签到任务通知", "content": log}
     except Exception as e:
         logging.warning(f"获取打卡信息失败，继续执行打卡: {e}")
         last_checkin_info = None
+
+    # 如果是下班卡，检查今天是否已经打了上班卡
+    if clock_type == "下班":
+        # 检查今天是否已经打了上班卡
+        has_start_card = False
+        if last_checkin_info and last_checkin_info.get("type") == "START":
+            checkin_time = datetime.strptime(
+                last_checkin_info["createTime"], "%Y-%m-%d %H:%M:%S")
+            if checkin_time.date() == current_time.date():
+                has_start_card = True
+        
+        # 如果没有上班卡记录，先补上班卡
+        if not has_start_card:
+            logging.info("检测到今天未打上班卡，先补上班卡")
+            start_result = clock_in_with_type("上班")
+            if not start_result.get("title", "").startswith("工学云签到成功"):
+                logging.warning("补上班卡失败，但仍继续执行下班卡")
+    
+    # 根据clock_type设置打卡类型
+    if clock_type == "上班":
+        checkin_type = "START"
+        display_type = "上班"
+    elif clock_type == "下班":
+        checkin_type = "END"
+        display_type = "下班"
+    else:
+        # 默认上班卡
+        checkin_type = "START"
+        display_type = "上班"
+    
+    # 检查是否已经打过卡
+    if last_checkin_info and last_checkin_info.get("type") == checkin_type:
+        last_checkin_time = datetime.strptime(
+            last_checkin_info["createTime"], "%Y-%m-%d %H:%M:%S")
+        if last_checkin_time.date() == current_time.date():
+            # 如果计划已切换，则忽略之前的打卡记录，重新打卡
+            if PlanInfoManager.is_plan_switched():
+                logging.info(f"检测到计划已切换，忽略之前的{display_type}打卡记录，重新打卡")
+                PlanInfoManager.clear_plan_switched()
+            else:
+                log = f"今日[{display_type}]卡已打，无需重复打卡"
+                logging.info(log)
+                return {"title": "工学云签到任务通知", "content": log}
 
     user_name = desensitize_name(UserInfoManager.get("nikeName"))
     logging.info(f"用户 {user_name} 开始 {display_type} 打卡")

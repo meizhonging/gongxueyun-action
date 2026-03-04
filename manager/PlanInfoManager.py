@@ -30,6 +30,7 @@ class PlanInfoManager:
     - 更新缓存并写回文件
     """
     _planinfo_cache: dict | None = None
+    _plan_switched: bool = False  # 标记计划是否已切换
 
     @classmethod
     def _load_from_file(cls) -> Optional[dict]:
@@ -102,3 +103,19 @@ class PlanInfoManager:
     def get_plan_id(cls) -> Optional[str]:
         """获取 planId"""
         return cls.get("planId")
+    
+    @classmethod
+    def set_plan_switched(cls, switched: bool):
+        """设置计划切换标记"""
+        cls._plan_switched = switched
+        logger.info(f"计划切换标记已设置为: {switched}")
+    
+    @classmethod
+    def is_plan_switched(cls) -> bool:
+        """检查计划是否已切换"""
+        return cls._plan_switched
+    
+    @classmethod
+    def clear_plan_switched(cls):
+        """清除计划切换标记"""
+        cls._plan_switched = False
