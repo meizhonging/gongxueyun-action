@@ -306,10 +306,54 @@ class ApiService:
                 logger.warning("未获取到实习计划数据，rsp 内容: %s", rsp)
                 return False
 
+            # 获取当前时间
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            current_timestamp = time.mktime(time.strptime(current_time, "%Y-%m-%d %H:%M:%S"))
+            
+            # 默认选择第一个计划
             plan_info = data_list[0]
             if not plan_info:
                 logger.warning("实习计划数据为空")
                 return False
+                
+            # 检查是否存在多个计划
+            if len(data_list) > 1:
+                logger.info(f"存在多个实习计划，共 {len(data_list)} 个")
+                
+                # 遍历所有计划，查找当前有效的计划
+                for plan in data_list:
+                    if not plan:
+                        continue
+                        
+                    # 检查计划的开始和结束时间
+                    start_time = plan.get("startTime")
+                    end_time = plan.get("endTime")
+                    
+                    if start_time and end_time:
+                        try:
+                            start_timestamp = time.mktime(time.strptime(start_time, "%Y-%m-%d %H:%M:%S"))
+                            end_timestamp = time.mktime(time.strptime(end_time, "%Y-%m-%d %H:%M:%S"))
+                            
+                            # 如果当前时间在计划的时间范围内，选择这个计划
+                            if start_timestamp <= current_timestamp <= end_timestamp:
+                                logger.info(f"找到当前有效的实习计划: {plan.get('planName')}, 结束时间: {end_time}")
+                                plan_info = plan
+                                break
+                        except ValueError as e:
+                            logger.warning(f"解析计划时间失败: {e}, 计划数据: {plan}")
+                            continue
+                
+                # 如果没有找到当前有效的计划，检查是否有岗位实习计划
+                if plan_info == data_list[0]:
+                    for plan in data_list:
+                        if not plan:
+                            continue
+                        # 检查是否是岗位实习计划
+                        if plan.get("type") == "GW_PRACTICE":
+                            logger.info(f"切换到岗位实习计划: {plan.get('planName')}, 结束时间: {plan.get('endTime')}")
+                            plan_info = plan
+                            break
+            
             logger.info("获取到的实习计划数据: %s", plan_info)
             # 更新缓存和文件
             PlanInfoManager.set_planinfo(plan_info)
