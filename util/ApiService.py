@@ -382,6 +382,7 @@ class ApiService:
         headers = self._get_authenticated_headers()
         data = {
             **get_current_month_info(),
+            "planId": PlanInfoManager.get_plan_id(),  # 添加当前计划ID，确保获取正确计划的打卡信息
             "t":
                 aes_encrypt(str(int(time.time() * 1000))),
         }
