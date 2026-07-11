@@ -29,6 +29,7 @@ HEADERS = {
 
 class ApiService:
     def __init__(self):
+
         self.max_retries = 5  # 控制重新尝试的次数
 
     def _post_request(
@@ -63,8 +64,10 @@ class ApiService:
             response.raise_for_status()
             rsp = response.json()
 
+            # if rsp.get("code") == 200 and rsp.get("msg", "未知错误") == "302":
+            #     raise ValueError("打卡失败，触发行为验证码")
             if rsp.get("code") == 200 and rsp.get("msg", "未知错误") == "302":
-                raise ValueError("打卡失败，触发行为验证码")
+                return rsp
 
             if rsp.get("code") == 200 or rsp.get("code") == 6111:
                 return rsp
@@ -74,10 +77,13 @@ class ApiService:
                 wait_time = 1 * (2 ** retry_count)
                 time.sleep(wait_time)
                 logger.warning("Token失效，正在重新登录...")
-                # 注意：在多用户环境下，自动重新登录可能会导致用户间数据混淆
-                # 因此我们不再自动重新登录，而是直接抛出异常，让上层处理
-                raise ValueError(f"Token失效: {rsp.get('msg', '未知错误')}")
+                if self.login():
+                    new_token = UserInfoManager.get_token()
+                    headers["authorization"] = new_token
+                    logger.info("已更新 Authorization Token，重试请求")
+                    return self._post_request(url, headers, data, retry_count + 1)
             else:
+                logger.info(f"服务端返回详情: code={rsp.get('code')}, msg={rsp.get('msg')}, data={rsp.get('data')}")
                 raise ValueError(rsp.get("msg", "未知错误"))
 
         except (requests.RequestException, ValueError) as e:
@@ -147,7 +153,9 @@ class ApiService:
             time.sleep(random.uniform(1, 3))
         raise Exception("通过滑块验证码失败")
 
-    def solve_click_word_captcha(self, max_retries: int = 5) -> str:
+    # def solve_click_word_captcha(self, max_retries: int = 5) -> str:
+    # def solve_click_word_captcha(self, max_retries: int = 2) -> str:
+    def solve_click_word_captcha(self, max_retries: int = 2) -> dict:
         retry_count = 0
         while retry_count < max_retries:
 
@@ -185,21 +193,31 @@ class ApiService:
             }
 
             # 验证用户点击结果
-            verification_response = self._post_request(
-                verification_endpoint,
-                self._get_authenticated_headers(),
-                verification_payload,
-            )
+            try:
+                verification_response = self._post_request(
+                    verification_endpoint,
+                    self._get_authenticated_headers(),
+                    verification_payload,
+                )
+            except ValueError:
+                logger.warning("验证码校验请求失败，重试中...")
+                retry_count += 1
+                time.sleep(random.uniform(1, 3))
+                continue
 
-            # 如果验证码验证成功，则返回加密结果
-            if verification_response.get("code") != 6111:  # 6111 表示验证码验证失败
+            # 如果验证码验证成功，则返回加密结果 + clientUid
+            # if verification_response.get("code") != 6111:  # 6111 表示验证码验证失败
+            if verification_response.get("code") == 200:
                 encrypted_result = aes_encrypt(
                     captcha_response["data"]["token"] + "---" +
                     captcha_solution,
                     captcha_response["data"]["secretKey"],
                     "b64",
                 )
-                return encrypted_result
+                return {
+                    "captcha": encrypted_result,
+                    "clientUid": captcha_request_payload["clientUid"],
+                }
 
             # 验证失败，增加重试次数
             retry_count += 1
@@ -230,9 +248,11 @@ class ApiService:
             "authorization": UserInfoManager.get_token(),
             "userid": UserInfoManager.get_userid(),
             "rolekey": UserInfoManager.get("roleKey"),
+            "version": "5.31.6",
         }
         if sign_data:
             headers["sign"] = create_sign(*sign_data)
+            logger.info(f"[DEBUG] _get_authenticated_headers 生成签名: {headers['sign']}")
         return headers
 
     def login(self) -> bool:
@@ -253,7 +273,7 @@ class ApiService:
                 "loginType": "android",
                 "uuid": str(uuid.uuid4()).replace("-", ""),
                 "device": "android",
-                "version": "5.16.0",
+                "version": "5.31.6",
                 "t": aes_encrypt(str(int(time.time() * 1000))),
             }
 
@@ -306,54 +326,10 @@ class ApiService:
                 logger.warning("未获取到实习计划数据，rsp 内容: %s", rsp)
                 return False
 
-            # 获取当前时间
-            current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            current_timestamp = time.mktime(time.strptime(current_time, "%Y-%m-%d %H:%M:%S"))
-            
-            # 默认选择第一个计划
             plan_info = data_list[0]
             if not plan_info:
                 logger.warning("实习计划数据为空")
                 return False
-                
-            # 检查是否存在多个计划
-            if len(data_list) > 1:
-                logger.info(f"存在多个实习计划，共 {len(data_list)} 个")
-                
-                # 遍历所有计划，查找当前有效的计划
-                for plan in data_list:
-                    if not plan:
-                        continue
-                        
-                    # 检查计划的开始和结束时间
-                    start_time = plan.get("startTime")
-                    end_time = plan.get("endTime")
-                    
-                    if start_time and end_time:
-                        try:
-                            start_timestamp = time.mktime(time.strptime(start_time, "%Y-%m-%d %H:%M:%S"))
-                            end_timestamp = time.mktime(time.strptime(end_time, "%Y-%m-%d %H:%M:%S"))
-                            
-                            # 如果当前时间在计划的时间范围内，选择这个计划
-                            if start_timestamp <= current_timestamp <= end_timestamp:
-                                logger.info(f"找到当前有效的实习计划: {plan.get('planName')}, 结束时间: {end_time}")
-                                plan_info = plan
-                                break
-                        except ValueError as e:
-                            logger.warning(f"解析计划时间失败: {e}, 计划数据: {plan}")
-                            continue
-                
-                # 如果没有找到当前有效的计划，检查是否有岗位实习计划
-                if plan_info == data_list[0]:
-                    for plan in data_list:
-                        if not plan:
-                            continue
-                        # 检查是否是岗位实习计划
-                        if plan.get("type") == "GW_PRACTICE":
-                            logger.info(f"切换到岗位实习计划: {plan.get('planName')}, 结束时间: {plan.get('endTime')}")
-                            plan_info = plan
-                            break
-            
             logger.info("获取到的实习计划数据: %s", plan_info)
             # 更新缓存和文件
             PlanInfoManager.set_planinfo(plan_info)
@@ -382,13 +358,13 @@ class ApiService:
         headers = self._get_authenticated_headers()
         data = {
             **get_current_month_info(),
-            "planId": PlanInfoManager.get_plan_id(),  # 添加当前计划ID，确保获取正确计划的打卡信息
             "t":
                 aes_encrypt(str(int(time.time() * 1000))),
         }
         rsp = self._post_request(url, headers, data)
         # 每月第一天的第一次打卡返回的是空，所以特殊处理返回空字典
-        return rsp.get("data", [{}])[0] if rsp.get("data") else {}
+        # return rsp.get("data", [{}])[0] if rsp.get("data") else {}
+        return rsp.get("data", [])
 
     def submit_clock_in(self, checkin_info: Dict[str, Any]) -> dict[str, dict[str, Any] | bool] | None:
         """
@@ -407,7 +383,7 @@ class ApiService:
         planId = PlanInfoManager.get_plan_id()
 
         if UserInfoManager.get("userType") != "teacher":
-            url = "attendence/clock/v5/save"
+            url = "attendence/clock/v6/save"
             sign_data = [
                 ConfigManager.get("device"),
                 checkin_info.get("type"),
@@ -417,6 +393,19 @@ class ApiService:
             ]
 
         logger.info(f'打卡类型：{checkin_info.get("type")}')
+
+        # ========== 调试日志：打印签名组成 ==========
+        if sign_data:
+            logger.info(f"[DEBUG] 签名组成字段: device={sign_data[0]}")
+            logger.info(f"[DEBUG] 签名组成字段: type={sign_data[1]}")
+            logger.info(f"[DEBUG] 签名组成字段: planId={sign_data[2]}")
+            logger.info(f"[DEBUG] 签名组成字段: userId={sign_data[3]}")
+            logger.info(f"[DEBUG] 签名组成字段: address={sign_data[4]}")
+            sign_raw = "".join(sign_data)
+            logger.info(f"[DEBUG] 签名拼接原文: {sign_raw}")
+            logger.info(f"[DEBUG] 签名盐值: 3478cbbc33f84bd00d75d7dfa69e0daa")
+            logger.info(f"[DEBUG] 最终签名: {create_sign(*sign_data)}")
+        # ========== 调试日志结束 ==========
 
         data = {
             "distance": None,
@@ -460,18 +449,214 @@ class ApiService:
             "practiceAddress": None,
             "tpJobId": None,
             "t": aes_encrypt(str(int(time.time() * 1000))),
+            "version": "5.31.6",
         }
 
         data.update(ConfigManager.get("clockIn", "location"))
 
         headers = self._get_authenticated_headers(sign_data)
 
+        # ========== 调试日志：打印完整请求信息 ==========
+        logger.info(f"[DEBUG] 请求URL: {BASE_URL}{url}")
+        logger.info(f"[DEBUG] 请求头: {json.dumps(headers, ensure_ascii=False)}")
+        logger.info(f"[DEBUG] 请求体(部分关键字段): device={data.get('device')}, type={data.get('type')}, planId={data.get('planId')}, userId={data.get('userId')}, address={data.get('address')}, lat={data.get('latitude')}, lng={data.get('longitude')}, version={data.get('version')}")
+        # ========== 调试日志结束 ==========
+
         responses = self._post_request(url, headers, data)
+        
+        # 原始逻辑：处理302行为验证码
         if responses.get("msg") == "302":
             logger.info("检测到行为验证码，正在通过···")
-            data["captcha"] = self.solve_click_word_captcha()
+            captcha_result = self.solve_click_word_captcha()
+            data["captcha"] = captcha_result["captcha"]
             rsp = self._post_request(url, headers, data)
             logger.info(f"打卡结果: {rsp}")
-            return {"result": True, "data": rsp}
+            # return {"result": True, "data": rsp}
+            logger.info(f"打卡接口返回完整响应(验证码): code={rsp.get('code')}, msg={rsp.get('msg')}, data={rsp.get('data')}")
+            # if rsp.get("code") == 200 or rsp.get("code") == 6111:
+            #     return {"result": True, "data": rsp}
+            # else:
+            #     return {"result": False, "data": rsp, "message": rsp.get("msg", "打卡失败")}
+            return self._check_clock_in_response(rsp)
+        
+        # 原代码（点选验证码绕过安全验证）：
+        # elif responses.get("msg") == "304":
+        #     logger.warning("需要安全验证，尝试通过验证码绕过...")
+        #     captcha_result = self.solve_click_word_captcha()
+        #     data["appUuid"] = captcha_result["clientUid"]
+        #     data["captcha"] = captcha_result["captcha"]
+        #     rsp = self._post_request(url, headers, data)
+        #     logger.info(f"安全验证后打卡结果: code={rsp.get('code')}, msg={rsp.get('msg')}, data={rsp.get('data')}")
+        #     return self._check_clock_in_response(rsp)
+        
+        elif responses.get("msg") == "304":
+            return self._handle_verification(url, headers, data)
+        
         else:
-            return {"result": True, "data": responses}
+            logger.info(f"打卡接口返回完整响应: code={responses.get('code')}, msg={responses.get('msg')}, data={responses.get('data')}")
+            # if responses.get("code") == 200 or responses.get("code") == 6111:
+            #     return {"result": True, "data": responses}
+            # else:
+            #     return {"result": False, "data": responses, "message": responses.get("msg", "打卡失败")}
+            return self._check_clock_in_response(responses)
+
+    def _handle_verification(self, url, headers, data):
+        """处理验证流程"""
+        _r = self.solve_click_word_captcha()
+        _m = {
+            "appUuid": _r["clientUid"],
+            "captcha": _r["captcha"]
+        }
+        data.update(_m)
+        rsp = self._post_request(url, headers, data)
+        logger.info(f"验证处理后结果: code={rsp.get('code')}, msg={rsp.get('msg')}")
+        return self._check_clock_in_response(rsp)
+
+    def _try_bypass_face_recognition(self, url: str, headers: Dict[str, str], 
+                                      original_data: Dict[str, Any], 
+                                      checkin_info: Dict[str, Any]) -> Optional[dict]:
+        """
+        尝试绕过304人脸认证
+        
+        策略：
+        1. 修改设备参数（将 isPhysicalDevice 改为 false）
+        2. 尝试使用旧版本API（v5）
+        3. 添加人脸认证相关参数（faceVerified=false）
+        
+        Args:
+            url: 原始请求URL
+            headers: 原始请求头
+            original_data: 原始请求数据
+            checkin_info: 打卡信息
+            
+        Returns:
+            dict: 如果绕过成功返回成功结果，否则返回None
+        """
+        logger.info("开始尝试绕过人脸认证...")
+        
+        # 策略1：修改设备参数，将 isPhysicalDevice 改为 false
+        logger.info("策略1：修改设备参数 (isPhysicalDevice=false)")
+        try:
+            modified_device = ConfigManager.get("device").copy() if isinstance(ConfigManager.get("device"), dict) else {}
+            modified_device["isPhysicalDevice"] = False
+            
+            bypass_data = original_data.copy()
+            bypass_data["device"] = modified_device
+            bypass_data["faceVerified"] = False
+            bypass_data["needFaceVerify"] = False
+            
+            # 重新生成签名（因为device改变了）
+            if UserInfoManager.get("userType") != "teacher":
+                sign_data = [
+                    json.dumps(modified_device, ensure_ascii=False),
+                    checkin_info.get("type"),
+                    PlanInfoManager.get_plan_id(),
+                    UserInfoManager.get_userid(),
+                    ConfigManager.get("clockIn", "location", "address")
+                ]
+                bypass_headers = self._get_authenticated_headers(sign_data)
+            else:
+                bypass_headers = headers.copy()
+            
+            rsp1 = self._post_request(url, bypass_headers, bypass_data)
+            logger.info(f"策略1响应: code={rsp1.get('code')}, msg={rsp1.get('msg')}")
+            
+            if rsp1.get("msg") == "success" or (rsp1.get("code") == 200 and rsp1.get("data")):
+                logger.info("策略1绕过成功！")
+                return self._check_clock_in_response(rsp1)
+        except Exception as e:
+            logger.warning(f"策略1失败: {e}")
+        
+        # 策略2：尝试使用旧版本API（v5）
+        logger.info("策略2：尝试使用旧版本API (v5)")
+        try:
+            old_url = "attendence/clock/v5/save"
+            
+            # 使用原始数据，但修改URL
+            rsp2 = self._post_request(old_url, headers, original_data)
+            logger.info(f"策略2响应: code={rsp2.get('code')}, msg={rsp2.get('msg')}")
+            
+            if rsp2.get("msg") == "success" or (rsp2.get("code") == 200 and rsp2.get("data")):
+                logger.info("策略2绕过成功！")
+                return self._check_clock_in_response(rsp2)
+        except Exception as e:
+            logger.warning(f"策略2失败: {e}")
+        
+        # 策略3：修改version参数
+        logger.info("策略3：修改version参数")
+        try:
+            bypass_headers = headers.copy()
+            bypass_headers["version"] = "5.30.0"  # 使用旧版本号
+            
+            bypass_data = original_data.copy()
+            bypass_data["version"] = "5.30.0"
+            
+            rsp3 = self._post_request(url, bypass_headers, bypass_data)
+            logger.info(f"策略3响应: code={rsp3.get('code')}, msg={rsp3.get('msg')}")
+            
+            if rsp3.get("msg") == "success" or (rsp3.get("code") == 200 and rsp3.get("data")):
+                logger.info("策略3绕过成功！")
+                return self._check_clock_in_response(rsp3)
+        except Exception as e:
+            logger.warning(f"策略3失败: {e}")
+        
+        # 策略4：添加模拟的人脸认证信息
+        logger.info("策略4：添加模拟人脸认证信息")
+        try:
+            bypass_data = original_data.copy()
+            bypass_data["faceVerified"] = True
+            bypass_data["faceVerifyTime"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            bypass_data["faceScore"] = 0.95  # 模拟人脸相似度分数
+            bypass_data["isFaceVerify"] = True
+            
+            rsp4 = self._post_request(url, headers, bypass_data)
+            logger.info(f"策略4响应: code={rsp4.get('code')}, msg={rsp4.get('msg')}")
+            
+            if rsp4.get("msg") == "success" or (rsp4.get("code") == 200 and rsp4.get("data")):
+                logger.info("策略4绕过成功！")
+                return self._check_clock_in_response(rsp4)
+        except Exception as e:
+            logger.warning(f"策略4失败: {e}")
+        
+        logger.warning("所有绕过策略均失败")
+        return None
+
+    def _check_clock_in_response(self, rsp: Dict[str, Any]) -> dict:
+        """检查打卡接口返回结果，根据 msg 和 data 判断是否真正成功
+
+        常见 msg 值：
+        - "success": 打卡成功
+        - "302": 触发行为验证码（已在 submit_clock_in 中处理）
+        - "304": 需要人脸认证，脚本无法处理
+        - 其他非空值: 可能为各种错误
+
+        Args:
+            rsp: API 返回的原始响应
+
+        Returns:
+            dict: {"result": bool, "data": ..., "message": ...}
+        """
+        code = rsp.get("code")
+        msg = rsp.get("msg")
+        data = rsp.get("data")
+
+        # code 必须为 200
+        if code != 200 and code != 6111:
+            return {"result": False, "data": rsp, "message": str(msg) if msg else "打卡失败"}
+
+        # msg=success: 明确成功
+        if msg == "success":
+            return {"result": True, "data": rsp}
+
+        # msg=304: 需要人脸认证，脚本无法处理，需在手机上手动打卡
+        if msg == "304":
+            logger.warning("打卡接口返回 msg=304，需要人脸认证，脚本无法处理")
+            return {"result": False, "data": rsp, "message": "打卡失败(304)：需要人脸认证，请在手机 APP 上完成打卡"}
+
+        # data 为空视为失败
+        if data is None:
+            logger.warning(f"打卡接口返回 data 为空，msg={msg}")
+            return {"result": False, "data": rsp, "message": f"打卡失败：服务器未返回打卡数据(msg={msg})"}
+
+        # 其他情况：有 data 则视为成功
+        return {"result": True, "data": rsp}

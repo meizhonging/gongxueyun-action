@@ -1,8 +1,12 @@
 import base64
 import json
 import logging
+import os
 import random
 import struct
+# from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from PIL import Image, ImageDraw, ImageFont
 
 from cv2.typing import MatLike
 import numpy as np
@@ -10,6 +14,9 @@ import onnxruntime as ort
 import cv2
 
 logger = logging.getLogger(__name__)
+
+# 中国标准时间 (UTC+8)
+CST = timezone(timedelta(hours=8))
 
 
 def calculate_precise_slider_distance(target_start_x: int, target_end_x: int,
@@ -219,13 +226,17 @@ def detect_objects(model_path: str,
             indices = cv2.dnn.NMSBoxes(boxes, scores, 0.5, 0.5)
             boxes = [boxes[i] for i in indices]
 
-        # 将边界框坐标还原到原始图像的尺寸
-        return [[
-            int((x1 - dw) / scale),
-            int((y1 - dh) / scale),
-            int((x2 - dw) / scale),
-            int((y2 - dh) / scale),
-        ] for x1, y1, x2, y2 in boxes]
+        # 将边界框坐标还原到原始图像的尺寸，并裁剪到图片边界内，过滤无效框
+        img_h, img_w = image_data.shape[:2]
+        valid_boxes = []
+        for x1, y1, x2, y2 in boxes:
+            nx1 = max(0, int((x1 - dw) / scale))
+            ny1 = max(0, int((y1 - dh) / scale))
+            nx2 = min(img_w, int((x2 - dw) / scale))
+            ny2 = min(img_h, int((y2 - dh) / scale))
+            if nx2 > nx1 and ny2 > ny1:
+                valid_boxes.append([nx1, ny1, nx2, ny2])
+        return valid_boxes
 
     except Exception as e:
         raise ValueError(f"目标检测失败: {e}")
@@ -249,6 +260,10 @@ def predict_ocr(model_path: str,
             providers=(["CUDAExecutionProvider"]
                        if use_gpu else ["CPUExecutionProvider"]),
         )
+
+        # 检查图片是否为空或无效
+        if image is None or image.size == 0 or image.shape[0] == 0 or image.shape[1] == 0:
+            raise ValueError("输入图片为空或尺寸无效")
 
         # 预处理图片
         image = np.expand_dims(
@@ -757,6 +772,76 @@ def predict_ocr(model_path: str,
         raise Exception(f"OCR预测失败: {e}")
 
 
+def save_click_word_snapshot(image: np.ndarray, bboxes: list, click_points: list,
+                             wordlist: list, recognized_dict: dict,
+                             stage: str = "predict") -> str:
+    """
+    保存文字点选验证码的快照，在原图上绘制检测框和点击坐标。
+
+    Args:
+        image: 原始图片（OpenCV 格式）。
+        bboxes: 所有检测到的边界框列表 [[x1, y1, x2, y2], ...]。
+        click_points: 点击坐标列表 [{"x": x, "y": y}, ...]。
+        wordlist: 需要点击的文字列表。
+        recognized_dict: 识别结果字典 {文字: [x1, y1, x2, y2]}。
+        stage: 快照阶段标识（"predict" 或 "verify"）。
+
+    Returns:
+        str: 保存的快照文件路径。
+    """
+    snapshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "snapshots")
+    os.makedirs(snapshot_dir, exist_ok=True)
+
+    # OpenCV 转 PIL 以支持中文
+    img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img_pil)
+
+    # 尝试加载系统字体，失败则用默认
+    font_path = None
+    for fp in [
+        "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
+        "C:/Windows/Fonts/simhei.ttf",     # 黑体
+        "C:/Windows/Fonts/simsun.ttc",     # 宋体
+        "/System/Library/Fonts/PingFang.ttc",  # macOS
+    ]:
+        if os.path.exists(fp):
+            font_path = fp
+            break
+
+    try:
+        font_label = ImageFont.truetype(font_path, 16) if font_path else ImageFont.load_default()
+        font_click = ImageFont.truetype(font_path, 14) if font_path else ImageFont.load_default()
+    except Exception:
+        font_label = ImageFont.load_default()
+        font_click = ImageFont.load_default()
+
+    # 绘制绿色检测框 + 文字标签
+    for word, bbox in recognized_dict.items():
+        x1, y1, x2, y2 = bbox
+        draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=2)
+        draw.text((x1, y1 - 18), word, fill=(0, 255, 0), font=font_label)
+
+    # 绘制红色点击点 + 编号文字
+    for i, pt in enumerate(click_points):
+        x, y = pt["x"], pt["y"]
+        r = 6
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=(255, 0, 0))
+        label = f"{i + 1}.{wordlist[i] if i < len(wordlist) else '?'}"
+        draw.text((x + 10, y - 14), label, fill=(255, 0, 0), font=font_click)
+
+    # PIL 转回 OpenCV 格式保存
+    annotated = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = datetime.now(CST).strftime("%Y%m%d_%H%M%S_%f")
+    filename = os.path.join(snapshot_dir,
+                            f"click_word_{stage}_{timestamp}.png")
+    cv2.imwrite(filename, annotated)
+    logger.info(f"文字点选快照已保存: {filename}")
+    return filename
+
+
 def recognize_clickWord_captcha(target: str, wordlist: list) -> str:
     """
     从给定的图像中识别点击文字验证码，并返回单词的坐标。
@@ -789,8 +874,12 @@ def recognize_clickWord_captcha(target: str, wordlist: list) -> str:
             text = predict_ocr("./models/ocr.onnx", image[y_min:y_max,
                                                           x_min:x_max])
             recognized_dict[text] = bbox
+            logger.info(f"OCR识别: [{text}] @ ({x_min},{y_min})-({x_max},{y_max})")
         except Exception as e:
             logger.warning(f"处理文本框时出错: {e}")
+
+    logger.info(f"需要点击: {wordlist}")
+    logger.info(f"识别结果: {list(recognized_dict.keys())}")
 
     # 根据wordlist的顺序找到对应的文本框，并生成随机坐标
     random_coordinates = []
@@ -803,6 +892,9 @@ def recognize_clickWord_captcha(target: str, wordlist: list) -> str:
             random_coordinates.append({"x": x, "y": y})
         else:
             logger.warning(f"未找到字符: {word}")
-            # 可以选择跳过或添加占位符
-            # random_coordinates.append("0,0")
+
+    # 保存快照（检测框 + 点击坐标）
+    save_click_word_snapshot(image, bboxes, random_coordinates, wordlist,
+                             recognized_dict, stage="predict")
+
     return json.dumps(random_coordinates, separators=(",", ":"))

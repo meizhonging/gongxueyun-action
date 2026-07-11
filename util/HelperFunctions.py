@@ -1,6 +1,7 @@
 import logging
 import threading
-from datetime import datetime, timedelta
+# from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -14,6 +15,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# 中国标准时间 (UTC+8)
+CST = timezone(timedelta(hours=8))
+
 
 def get_current_month_info() -> dict:
     """
@@ -25,7 +29,8 @@ def get_current_month_info() -> dict:
     Returns:
         包含当前月份开始和结束时间的字典。
     """
-    now = datetime.now()
+    # now = datetime.now()
+    now = datetime.now(CST)
     # 当前月份的第一天
     start_of_month = datetime(now.year, now.month, 1)
 
@@ -66,44 +71,39 @@ def desensitize_name(name: str) -> str:
 
 def desensitize_phone(phone: str) -> str:
     """
-    对手机号进行脱敏处理，保留前3位和后4位，中间用星号替换。
+    对手机号进行脱敏处理，保留前3位和后4位，中间用星号替代。
 
     Args:
         phone (str): 待脱敏的手机号。
 
     Returns:
-        str: 脱敏后的手机号。
+        str: 脱敏后的手机号，如 138****1234。
     """
-    if not phone or len(phone) != 11:
-        return "***********"
-    
-    return f"{phone[:3]}****{phone[-4:]}"
+    phone = phone.strip()
+    n = len(phone)
+    if n < 7:
+        return phone[:1] + '*' * (n - 1) if n > 1 else '*'
+    return f"{phone[:3]}{'*' * (n - 7)}{phone[-4:]}"
 
 
 def desensitize_address(address: str) -> str:
     """
-    对地址进行脱敏处理，保留省份和城市信息，详细地址用星号替换。
+    对地址进行脱敏处理，保留省市信息，详细地址用星号替代。
 
     Args:
         address (str): 待脱敏的地址。
 
     Returns:
-        str: 脱敏后的地址。
+        str: 脱敏后的地址，如 四川省 · 成都市 · ***。
     """
+    address = address.strip()
     if not address:
-        return "********"
-    
-    # 尝试按中文分隔符分割地址
-    parts = address.split(' · ')
+        return address
+    parts = address.split('·')
     if len(parts) >= 3:
-        # 保留省份和城市，详细地址脱敏
-        return f"{parts[0]} · {parts[1]} · ******"
-    elif len(parts) >= 2:
-        # 保留省份，城市和详细地址脱敏
-        return f"{parts[0]} · ******"
-    else:
-        # 无法分割，整体脱敏
-        return "******"
+        parts = parts[:2] + ['***']
+        return ' · '.join(p.strip() for p in parts)
+    return address[:3] + '***' if len(address) > 3 else '***'
 
 
 def is_workday_realtime() -> bool:
@@ -117,7 +117,8 @@ def is_workday_realtime() -> bool:
         bool: True 表示是法定工作日，False 表示是非工作日（周末或节假日）
     """
 
-    check_date = datetime.today()
+    # check_date = datetime.today()
+    check_date = datetime.now(CST)
     date_str = check_date.strftime("%Y-%m-%d")
     url = f"https://timor.tech/api/holiday/info/{date_str}"
 
@@ -164,44 +165,40 @@ def is_workday_realtime() -> bool:
 
 def get_checkin_type() -> dict[str, str]:
     """
-    获取打卡类型。
+    获取打卡类型（单次模式）。
 
     该方法根据配置文件获取打卡类型，并返回一个字典，包含打卡类型和显示名称。
+    适用于 single 模式（只打一次卡）。
 
     Returns:
         dict[str, str]: 包含打卡类型和显示名称的字典。
     """
-    mode = ConfigManager.get("clockIn", "mode")
-    # 1. 法定工作日模式
-    if mode == "weekday":
-        # 判断今天是否为工作日
-        if is_workday_realtime():
-            return {"type": "START", "display": "上班"}
-        else:
-            return {"type": "HOLIDAY", "display": "休息/节假日"}
-
-    # 2. 每天执行
-    if mode == "everyday":
+    type = ConfigManager.get("clockIn", "type")
+    if type == "START":
         return {"type": "START", "display": "上班"}
+    elif type == "END":
+        return {"type": "END", "display": "下班"}
+    else:
+        return {"type": "HOLIDAY", "display": "休息/节假日"}
 
-    # 3. 自定义模式
-    if mode == "customize":
-        custom_days = ConfigManager.get("clockIn", "customDays", default=[])
-        today = datetime.today().weekday() + 1  # 1=星期一, 7=星期天
-        if today in custom_days:
-            return {"type": "START", "display": "上班"}
-        else:
-            return {"type": "HOLIDAY", "display": "休息/节假日"}
-    
-    # 4. 一天打两次卡模式（新增）
+
+def get_checkin_types() -> list[dict[str, str]]:
+    """
+    根据打卡模式获取打卡类型列表。
+
+    支持的模式：
+    - twice_daily: 一天两次打卡（上班 + 下班）
+    - single: 单次打卡，根据 clockIn.type 决定类型
+    - 其他/未配置: 默认休息/节假日打卡
+
+    Returns:
+        list[dict[str, str]]: 打卡类型列表，每个元素包含 type 和 display。
+    """
+    mode = ConfigManager.get("clockIn", "mode", default="single")
     if mode == "twice_daily":
-        current_time = datetime.now()
-        hour = current_time.hour
-        # 12点前打上班卡，12点后打下班卡
-        if hour < 12:
-            return {"type": "START", "display": "上班"}
-        else:
-            return {"type": "END", "display": "下班"}
-    
-    # 默认返回上班卡
-    return {"type": "START", "display": "上班"}
+        return [
+            {"type": "START", "display": "上班"},
+            {"type": "END", "display": "下班"},
+        ]
+    else:
+        return [get_checkin_type()]

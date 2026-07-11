@@ -1,13 +1,14 @@
 import logging
-import os
 import sys
-from datetime import datetime
+import os
+import traceback
+
 from manager.ConfigManager import ConfigManager
 from step.clockIn import clock_in
 from step.fetchPlan import fetch_plan
 from step.login import login
 from manager.UserInfoManager import UserInfoManager
-from step.sendEmail import send_email
+from util.HelperFunctions import get_checkin_types
 
 # ======================
 # 日志配置
@@ -23,70 +24,118 @@ logging.basicConfig(
 )
 
 
+# 原代码（单用户）：
+# def execute_tasks():
+#     try:
+#         logging.info("开始执行打卡任务")
+#         # 登录
+#         isLogin = login()
+#         if not isLogin:
+#             logging.warning("登录失败")
+#             input("按回车键退出...")  # 阻塞窗口，方便查看
+#             return
+#
+#         logging.info(f"用户类型：{UserInfoManager.get('roleKey')}")
+#         if UserInfoManager.get("userType") != "student":
+#             logging.error("当前用户不是学生，结束执行打卡任务")
+#             input("按回车键退出...")
+#             return
+#
+#         # 获取打卡信息
+#         hasPlan = fetch_plan()
+#         if not hasPlan:
+#             logging.warning("未获取到打卡信息")
+#             input("按回车键退出...")
+#             return
+#
+#         # 根据模式执行打卡（支持 twice_daily 一天两次打卡）
+#         checkin_types = get_checkin_types()
+#         logging.info(f"打卡模式：{ConfigManager.get('clockIn', 'mode', default='single')}，共 {len(checkin_types)} 次打卡")
+#         for checkin in checkin_types:
+#             result = clock_in(force_type=checkin)
+#             logging.info(result)
+#
+#         logging.info("打卡任务完成")
+#         input("按回车键退出...")
+#
+#     except Exception as e:
+#         logging.error("执行打卡任务时发生异常")
+#         logging.error(traceback.format_exc())
+#         input("按回车键退出...")
+
+
+# 新代码（支持多用户）：
+def execute_tasks_for_user(user_index: int) -> bool:
+    """为单个用户执行打卡任务"""
+    try:
+        # 设置当前用户索引
+        ConfigManager.set_current_user(user_index)
+        UserInfoManager.set_current_user(user_index)
+        
+        phone = ConfigManager.get("user", "phone", default="未知")
+        logging.info(f"========== 开始处理用户 {user_index + 1}: {phone} ==========")
+        
+        # 登录
+        isLogin = login()
+        if not isLogin:
+            logging.warning(f"用户 {phone} 登录失败")
+            return False
+
+        logging.info(f"用户类型：{UserInfoManager.get('roleKey')}")
+        if UserInfoManager.get("userType") != "student":
+            logging.error(f"用户 {phone} 不是学生，跳过打卡")
+            return False
+
+        # 获取打卡信息
+        hasPlan = fetch_plan()
+        if not hasPlan:
+            logging.warning(f"用户 {phone} 未获取到打卡信息")
+            return False
+
+        # 根据模式执行打卡（支持 twice_daily 一天两次打卡）
+        checkin_types = get_checkin_types()
+        logging.info(f"打卡模式：{ConfigManager.get('clockIn', 'mode', default='single')}，共 {len(checkin_types)} 次打卡")
+        for checkin in checkin_types:
+            result = clock_in(force_type=checkin)
+            logging.info(result)
+
+        logging.info(f"用户 {phone} 打卡任务完成")
+        return True
+
+    except Exception as e:
+        phone = ConfigManager.get("user", "phone", default="未知")
+        logging.error(f"用户 {phone} 执行打卡任务时发生异常")
+        logging.error(traceback.format_exc())
+        return False
+
+
 def execute_tasks():
-    # 登录
-    isLogin = login()
-    if not isLogin:
-        logging.warning("登录失败")
-        return
-    logging.info(f"用户数据：{UserInfoManager.load()}")
-    logging.info(f"用户类型：{UserInfoManager.get('roleKey')}")
-    if UserInfoManager.get("userType") != "student":
-        sys.exit("当前用户不是学生，结束执行打卡任务")
-    # 获取打卡信息
-    hasPlan = fetch_plan()
-    if not hasPlan:
-        logging.warning("未获取到打卡信息")
-        return
-    # 执行打卡
-    str = clock_in()
-    logging.info(str)
-    # 发送邮件通知
-    if ConfigManager.get("smtp", "enable"):
-        send_email(str["title"], str["content"])
+    try:
+        logging.info("开始执行打卡任务")
+        
+        # 获取用户数量
+        user_count = ConfigManager.get_user_count()
+        if user_count == 0:
+            logging.error("未找到任何用户配置")
+            input("按回车键退出...")
+            return
+        
+        logging.info(f"共检测到 {user_count} 个用户配置")
+        
+        # 遍历所有用户执行打卡
+        success_count = 0
+        for i in range(user_count):
+            if execute_tasks_for_user(i):
+                success_count += 1
+        
+        logging.info(f"========== 所有用户处理完成: {success_count}/{user_count} 个用户成功 ==========")
+        input("按回车键退出...")
 
+    except Exception as e:
+        logging.error("执行打卡任务时发生异常")
+        logging.error(traceback.format_exc())
+        input("按回车键退出...")
 
-def test_clock_in():
-    """
-    测试模式：只打卡一次，根据当前时间判断上班卡还是下班卡
-    """
-    current_time = datetime.now()
-    hour = current_time.hour
-    
-    # 判断打卡类型
-    if hour < 12:
-        clock_type = "上班"
-        logging.info(f"当前时间 {current_time.strftime('%H:%M')}，执行上班卡测试")
-    else:
-        clock_type = "下班"
-        logging.info(f"当前时间 {current_time.strftime('%H:%M')}，执行下班卡测试")
-    
-    # 登录
-    isLogin = login()
-    if not isLogin:
-        logging.warning("登录失败")
-        return
-    logging.info(f"用户数据：{UserInfoManager.load()}")
-    logging.info(f"用户类型：{UserInfoManager.get('roleKey')}")
-    if UserInfoManager.get("userType") != "student":
-        sys.exit("当前用户不是学生，结束执行打卡任务")
-    
-    # 获取打卡信息
-    hasPlan = fetch_plan()
-    if not hasPlan:
-        logging.warning("未获取到打卡信息")
-        return
-    
-    # 执行打卡
-    result = clock_in()
-    logging.info(f"{clock_type}卡测试结果：{result}")
-    
-    # 发送邮件通知
-    if ConfigManager.get("smtp", "enable"):
-        send_email(result["title"], result["content"])
-    
-    return result
 
 if __name__ == '__main__':
-    # 测试模式：只打卡一次
-    test_clock_in()
+    execute_tasks()

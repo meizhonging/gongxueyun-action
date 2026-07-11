@@ -3,11 +3,14 @@
 这是一个基于GitHub Actions的工学云自动签到系统，支持多用户配置，可以自动执行上班卡和下班卡的签到操作。
 
 ## 效果展示
-**签到成功**：
-<img src="/image/签到.jpg" width="360" height="600">
-
-**消息推送**：
-<img src="/image/消息推送.png" width="488" height="600">
+<p align="center">
+  <img src="image/签到.jpg" width="40%" style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15)">
+  &nbsp;&nbsp;
+  <img src="image/消息推送.png" width="45%" style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15)">
+</p>
+<p align="center">
+  <sub><b>签到成功</b>（左）&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>消息推送</b>（右）</sub>
+</p>
 ## 功能特点
 
 - ✅ 支持多用户配置
@@ -16,6 +19,19 @@
 - ✅ 手动触发执行
 - ✅ 邮件通知功能
 - ✅ 免服务器运行
+
+## 本地测试快照功能
+- **本地测试**：使用main.py进行测试
+- **Before**：代码执行前的效果
+- **After**：代码中ai模型推理执行后的效果
+<p align="center">
+  <img src="image/效果.png" width="80%" style="border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15)">
+</p>
+<p>
+  <img src="image/before_verify_20260614.png" width="48%">
+  &nbsp;
+  <img src="image/after_verify_20260614.png" width="48%">
+</p>
 
 ## 部署步骤
 https://github.com/kaka-niu/gongxueyun-action
@@ -255,6 +271,6 @@ https://github.com/kaka-niu/gongxueyun-action
 本项目采用MIT许可证，详情请参阅[LICENSE](LICENSE)文件。
 ## 交流讨论
 
-| 交流探讨 | 赞赏 | 赞赏 |
-|---------|------|------|
-| <img src="/image/1.png" alt="交流探讨" width="300" height="360"> | <img src="/image/2.jpg" alt="赞赏" width="300" height="360"> | <img src="/image/3.jpg" alt="赞赏" width="300" height="360"> |
+| 交流探讨 | 群聊 | 联系 | 赞赏 | 赞赏 |
+|---------|------|------|------|------|
+| <img src="/image/qun.jpg" alt="交流探讨" width="100%"> | <img src="/image/4.jpg" alt="群聊" width="100%"> | <img src="/image/1.png" alt="联系" width="100%"> | <img src="/image/2.jpg" alt="赞赏" width="100%"> | <img src="/image/3.jpg" alt="赞赏" width="100%"> |
