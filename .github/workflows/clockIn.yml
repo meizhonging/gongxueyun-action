@@ -3,7 +3,7 @@ name: GongxueyunSign
 on:
   schedule:
     # 北京时间 8:00 和 18:00 执行（UTC 时间 = 北京时间 - 8 小时）
-    - cron: '0 24 * * *'   # 北京时间 8:00
+    - cron: '0 0 * * *'   # 北京时间 8:00
     - cron: '0 10 * * *'    # 北京时间 18:00
   workflow_dispatch:       # 支持手动触发
 
