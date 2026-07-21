@@ -1,4 +1,4 @@
-name: 工学云自动打卡
+name: GongxueyunSign
 
 on:
   schedule:
